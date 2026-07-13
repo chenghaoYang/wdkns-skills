@@ -1,0 +1,163 @@
+name: Apply EfficientML review fixes once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/patch-efficientml-review-main-once.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-efficientml-review-main-once
+  cancel-in-progress: false
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Apply focused fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          prepare_path = Path("scripts/prepare_efficientml_lecture.py")
+          prepare = prepare_path.read_text(encoding="utf-8")
+          old = """    except Exception:
+              temporary.unlink(missing_ok=True)
+              raise
+          """
+          new = """    except Exception as exc:
+              temporary.unlink(missing_ok=True)
+              raise PreparationError(
+                  f"Failed to download {url} to {destination}: {exc}"
+              ) from exc
+          """
+          if prepare.count(old) != 1:
+              raise SystemExit("Expected exactly one raw download exception block")
+          prepare_path.write_text(prepare.replace(old, new), encoding="utf-8")
+
+          validator_path = Path("scripts/validate_efficientml_output.py")
+          validator = validator_path.read_text(encoding="utf-8")
+          start = validator.index("def resolve_graphic(")
+          end = validator.index("\n\ndef pdf_page_count", start)
+          replacement = '''def _resolved_file_within(root: Path, candidate: Path) -> Path | None:
+              try:
+                  resolved = candidate.resolve(strict=True)
+                  resolved.relative_to(root)
+              except (OSError, ValueError):
+                  return None
+              return resolved if resolved.is_file() else None
+
+
+          def resolve_graphic(tex_dir: Path, raw: str) -> Path | None:
+              raw = raw.strip()
+              relative = Path(raw)
+              if not raw or relative.is_absolute():
+                  return None
+
+              try:
+                  root = tex_dir.resolve(strict=True)
+              except OSError:
+                  return None
+
+              candidate = root / relative
+              resolved = _resolved_file_within(root, candidate)
+              if resolved is not None:
+                  return resolved
+              if candidate.suffix:
+                  return None
+              for extension in IMAGE_EXTENSIONS:
+                  resolved = _resolved_file_within(root, candidate.with_suffix(extension))
+                  if resolved is not None:
+                      return resolved
+              return None
+          '''
+          validator_path.write_text(
+              validator[:start] + replacement + validator[end:], encoding="utf-8"
+          )
+          PY
+
+      - name: Compile and run focused regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/prepare_efficientml_lecture.py \
+            scripts/validate_efficientml_output.py
+          python3 - <<'PY'
+          import importlib.util
+          import tempfile
+          from pathlib import Path
+          from unittest import mock
+
+          def load(name: str, path: str):
+              spec = importlib.util.spec_from_file_location(name, path)
+              assert spec and spec.loader
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+          validator = load("validator", "scripts/validate_efficientml_output.py")
+          preparer = load("preparer", "scripts/prepare_efficientml_lecture.py")
+
+          with tempfile.TemporaryDirectory() as temporary:
+              base = Path(temporary)
+              tex_dir = base / "deliverables"
+              assets = tex_dir / "assets"
+              assets.mkdir(parents=True)
+              good = assets / "good.png"
+              good.write_bytes(b"png")
+              outside = base / "outside.png"
+              outside.write_bytes(b"png")
+
+              assert validator.resolve_graphic(tex_dir, "assets/good.png") == good.resolve()
+              assert validator.resolve_graphic(tex_dir, "assets/good") == good.resolve()
+              assert validator.resolve_graphic(tex_dir, str(outside.resolve())) is None
+              assert validator.resolve_graphic(tex_dir, "../outside.png") is None
+              assert validator.resolve_graphic(tex_dir, "assets") is None
+
+              link = assets / "outside-link.png"
+              try:
+                  link.symlink_to(outside)
+              except OSError:
+                  pass
+              else:
+                  assert validator.resolve_graphic(tex_dir, "assets/outside-link.png") is None
+
+              destination = base / "download.pdf"
+              with mock.patch.object(
+                  preparer.urllib.request,
+                  "urlopen",
+                  side_effect=OSError("simulated network failure"),
+              ):
+                  try:
+                      preparer.download_file("https://example.invalid/file.pdf", destination)
+                  except preparer.PreparationError as exc:
+                      assert "Failed to download" in str(exc)
+                      assert "simulated network failure" in str(exc)
+                      assert not destination.with_suffix(".pdf.part").exists()
+                  else:
+                      raise AssertionError("download_file did not wrap the network error")
+
+          print("Focused EfficientML review regression tests passed.")
+          PY
+
+      - name: Commit tested fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/prepare_efficientml_lecture.py scripts/validate_efficientml_output.py
+          git diff --cached --check
+          git commit -m "fix: harden EfficientML source and asset validation"
+          git push origin HEAD:main
