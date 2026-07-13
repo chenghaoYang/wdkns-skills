@@ -1,0 +1,47 @@
+name: Bootstrap EfficientML all lectures once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/bootstrap-efficientml-all-once.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: bootstrap-efficientml-all-once
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch the 23-lecture render
+    if: github.repository == 'chenghaoYang/wdkns-skills'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the required OpenAI secret
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$OPENAI_API_KEY" ]]; then
+            echo "::error::Repository secret OPENAI_API_KEY is not configured; no render was dispatched."
+            exit 1
+          fi
+
+      - name: Dispatch all 23 lectures
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/render-efficientml-2023.yml/dispatches" \
+            -f ref="${GITHUB_REF_NAME}" \
+            -f 'inputs[lecture]=all' \
+            -f 'inputs[model]='
+          echo "The all-lecture EfficientML render was dispatched on ${GITHUB_REF_NAME}." >> "$GITHUB_STEP_SUMMARY"
