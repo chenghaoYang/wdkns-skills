@@ -29,13 +29,21 @@ jobs:
             report='No workflow run was found for patch-efficientml-review-main-once.yml.'
           else
             jobs="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100")"
+            job_id="$(jq -r '.jobs[0].id // empty' <<< "$jobs")"
+            logs=''
+            if [[ -n "$job_id" ]]; then
+              logs="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/jobs/${job_id}/logs" 2>&1 || true)"
+            fi
             report="$(
               {
                 echo 'Latest run:'
-                jq '{id, html_url, status, conclusion, event, head_branch, head_sha, created_at, updated_at}' <<< "$runs" | jq '.workflow_runs[0]'
+                jq '.workflow_runs[0] | {id, html_url, status, conclusion, event, head_branch, head_sha, created_at, updated_at}' <<< "$runs"
                 echo
                 echo 'Jobs:'
                 jq '[.jobs[] | {id, name, status, conclusion, started_at, completed_at, steps:[.steps[] | {name,status,conclusion,number}]}]' <<< "$jobs"
+                echo
+                echo 'Last 120 log lines:'
+                tail -n 120 <<< "$logs"
               }
             )"
           fi
