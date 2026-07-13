@@ -130,10 +130,11 @@ def download_file(url: str, destination: Path) -> None:
         if temporary.stat().st_size <= 1024:
             raise PreparationError(f"Downloaded file is unexpectedly small: {temporary}")
         temporary.replace(destination)
-    except Exception:
+    except Exception as exc:
         temporary.unlink(missing_ok=True)
-        raise
-
+        raise PreparationError(
+            f"Failed to download {url} to {destination}: {exc}"
+        ) from exc
 
 def run_streaming(command: list[str], log_path: Path, cwd: Path | None = None) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)

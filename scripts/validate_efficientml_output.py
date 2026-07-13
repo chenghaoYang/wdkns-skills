@@ -61,19 +61,37 @@ def discover_single(directory: Path, suffix: str) -> Path:
     return files[0]
 
 
+def _resolved_file_within(root: Path, candidate: Path) -> Path | None:
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return resolved if resolved.is_file() else None
+
+
 def resolve_graphic(tex_dir: Path, raw: str) -> Path | None:
     raw = raw.strip()
-    candidate = tex_dir / raw
-    if candidate.exists():
-        return candidate.resolve()
+    relative = Path(raw)
+    if not raw or relative.is_absolute():
+        return None
+
+    try:
+        root = tex_dir.resolve(strict=True)
+    except OSError:
+        return None
+
+    candidate = root / relative
+    resolved = _resolved_file_within(root, candidate)
+    if resolved is not None:
+        return resolved
     if candidate.suffix:
         return None
     for extension in IMAGE_EXTENSIONS:
-        extended = candidate.with_suffix(extension)
-        if extended.exists():
-            return extended.resolve()
+        resolved = _resolved_file_within(root, candidate.with_suffix(extension))
+        if resolved is not None:
+            return resolved
     return None
-
 
 def pdf_page_count(pdfinfo: str) -> int:
     match = re.search(r"^Pages:\s+(\d+)\s*$", pdfinfo, re.MULTILINE)
