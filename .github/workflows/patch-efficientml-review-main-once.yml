@@ -31,19 +31,19 @@ jobs:
 
           prepare_path = Path("scripts/prepare_efficientml_lecture.py")
           prepare = prepare_path.read_text(encoding="utf-8")
-          old = """    except Exception:
-              temporary.unlink(missing_ok=True)
-              raise
-          """
-          new = """    except Exception as exc:
+          function_start = prepare.index("def download_file(")
+          block_start = prepare.index("    except Exception:\n", function_start)
+          block_end = prepare.index("\n\ndef run_streaming", block_start)
+          replacement = '''    except Exception as exc:
               temporary.unlink(missing_ok=True)
               raise PreparationError(
                   f"Failed to download {url} to {destination}: {exc}"
               ) from exc
-          """
-          if prepare.count(old) != 1:
-              raise SystemExit("Expected exactly one raw download exception block")
-          prepare_path.write_text(prepare.replace(old, new), encoding="utf-8")
+          '''
+          prepare_path.write_text(
+              prepare[:block_start] + replacement + prepare[block_end:],
+              encoding="utf-8",
+          )
 
           validator_path = Path("scripts/validate_efficientml_output.py")
           validator = validator_path.read_text(encoding="utf-8")
