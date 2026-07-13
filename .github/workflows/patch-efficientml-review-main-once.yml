@@ -34,12 +34,15 @@ jobs:
           function_start = prepare.index("def download_file(")
           block_start = prepare.index("    except Exception:\n", function_start)
           block_end = prepare.index("\n\ndef run_streaming", block_start)
-          replacement = '''    except Exception as exc:
-              temporary.unlink(missing_ok=True)
-              raise PreparationError(
-                  f"Failed to download {url} to {destination}: {exc}"
-              ) from exc
-          '''
+          replacement = "\n".join(
+              [
+                  "    except Exception as exc:",
+                  "        temporary.unlink(missing_ok=True)",
+                  "        raise PreparationError(",
+                  '            f"Failed to download {url} to {destination}: {exc}"',
+                  "        ) from exc",
+              ]
+          )
           prepare_path.write_text(
               prepare[:block_start] + replacement + prepare[block_end:],
               encoding="utf-8",
@@ -49,38 +52,41 @@ jobs:
           validator = validator_path.read_text(encoding="utf-8")
           start = validator.index("def resolve_graphic(")
           end = validator.index("\n\ndef pdf_page_count", start)
-          replacement = '''def _resolved_file_within(root: Path, candidate: Path) -> Path | None:
-              try:
-                  resolved = candidate.resolve(strict=True)
-                  resolved.relative_to(root)
-              except (OSError, ValueError):
-                  return None
-              return resolved if resolved.is_file() else None
-
-
-          def resolve_graphic(tex_dir: Path, raw: str) -> Path | None:
-              raw = raw.strip()
-              relative = Path(raw)
-              if not raw or relative.is_absolute():
-                  return None
-
-              try:
-                  root = tex_dir.resolve(strict=True)
-              except OSError:
-                  return None
-
-              candidate = root / relative
-              resolved = _resolved_file_within(root, candidate)
-              if resolved is not None:
-                  return resolved
-              if candidate.suffix:
-                  return None
-              for extension in IMAGE_EXTENSIONS:
-                  resolved = _resolved_file_within(root, candidate.with_suffix(extension))
-                  if resolved is not None:
-                      return resolved
-              return None
-          '''
+          replacement = "\n".join(
+              [
+                  "def _resolved_file_within(root: Path, candidate: Path) -> Path | None:",
+                  "    try:",
+                  "        resolved = candidate.resolve(strict=True)",
+                  "        resolved.relative_to(root)",
+                  "    except (OSError, ValueError):",
+                  "        return None",
+                  "    return resolved if resolved.is_file() else None",
+                  "",
+                  "",
+                  "def resolve_graphic(tex_dir: Path, raw: str) -> Path | None:",
+                  "    raw = raw.strip()",
+                  "    relative = Path(raw)",
+                  "    if not raw or relative.is_absolute():",
+                  "        return None",
+                  "",
+                  "    try:",
+                  "        root = tex_dir.resolve(strict=True)",
+                  "    except OSError:",
+                  "        return None",
+                  "",
+                  "    candidate = root / relative",
+                  "    resolved = _resolved_file_within(root, candidate)",
+                  "    if resolved is not None:",
+                  "        return resolved",
+                  "    if candidate.suffix:",
+                  "        return None",
+                  "    for extension in IMAGE_EXTENSIONS:",
+                  "        resolved = _resolved_file_within(root, candidate.with_suffix(extension))",
+                  "        if resolved is not None:",
+                  "            return resolved",
+                  "    return None",
+              ]
+          )
           validator_path.write_text(
               validator[:start] + replacement + validator[end:], encoding="utf-8"
           )
