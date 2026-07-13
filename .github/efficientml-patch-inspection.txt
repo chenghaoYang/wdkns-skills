@@ -1,0 +1,58 @@
+Latest run:
+null
+
+Jobs:
+[
+  {
+    "id": 86756224906,
+    "name": "patch-and-test",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-07-13T07:14:08Z",
+    "completed_at": "2026-07-13T07:14:13Z",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Check out main",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Apply focused fixes",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 3
+      },
+      {
+        "name": "Compile and run focused regression tests",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 4
+      },
+      {
+        "name": "Commit tested fixes",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 5
+      },
+      {
+        "name": "Post Check out main",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      }
+    ]
+  }
+]
