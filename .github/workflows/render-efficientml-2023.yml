@@ -1,0 +1,272 @@
+name: Render MIT 6.5940 EfficientML PDFs
+
+run-name: >-
+  EfficientML ${{ inputs.lecture == 'all' && 'all 23 lectures' || format('lecture {0}', inputs.lecture) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      lecture:
+        description: "Lecture to render; choose all for the complete course"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - "01"
+          - "02"
+          - "03"
+          - "04"
+          - "05"
+          - "06"
+          - "07"
+          - "08"
+          - "09"
+          - "10"
+          - "11"
+          - "12"
+          - "13"
+          - "14"
+          - "15"
+          - "16"
+          - "17"
+          - "18"
+          - "19"
+          - "20"
+          - "21"
+          - "22"
+          - "23"
+      model:
+        description: "Optional Codex model override; blank uses the action default"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: efficientml-${{ github.repository }}-${{ inputs.lecture }}
+  cancel-in-progress: false
+
+env:
+  COURSE_ID: mit-6.5940-efficientml-2023
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  plan:
+    name: Build lecture matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      selected: ${{ steps.matrix.outputs.selected }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Select lectures from the canonical manifest
+        id: matrix
+        shell: bash
+        env:
+          REQUESTED_LECTURE: ${{ inputs.lecture }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_path = Path("courses") / os.environ["COURSE_ID"] / "manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          lectures = manifest["lectures"]
+          requested = os.environ["REQUESTED_LECTURE"]
+
+          if requested == "all":
+              selected = lectures
+          else:
+              selected = [lecture for lecture in lectures if lecture["id"] == requested]
+              if not selected:
+                  raise SystemExit(f"Lecture {requested!r} is not in {manifest_path}")
+
+          include = [
+              {
+                  "id": lecture["id"],
+                  "slug": lecture["slug"],
+                  "title": lecture["title_en"],
+              }
+              for lecture in selected
+          ]
+          matrix = json.dumps({"include": include}, ensure_ascii=False, separators=(",", ":"))
+          selected_ids = ",".join(lecture["id"] for lecture in selected)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={matrix}\n")
+              output.write(f"selected={selected_ids}\n")
+
+          print(json.dumps({"selected": selected_ids, "matrix": include}, ensure_ascii=False, indent=2))
+          PY
+
+  render:
+    name: L${{ matrix.lecture.id }} · ${{ matrix.lecture.title }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        lecture: ${{ fromJSON(needs.plan.outputs.matrix).include }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Verify required OpenAI secret
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$OPENAI_API_KEY" ]]; then
+            echo "::error::Repository secret OPENAI_API_KEY is required by openai/codex-action@v1."
+            exit 1
+          fi
+
+      - name: Install media, LaTeX, PDF, and download dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ffmpeg \
+            imagemagick \
+            jq \
+            poppler-utils \
+            texlive-xetex \
+            texlive-lang-chinese \
+            texlive-latex-extra \
+            texlive-pictures \
+            texlive-fonts-recommended \
+            fonts-noto-cjk \
+            python3-pip
+          python3 -m pip install --break-system-packages --upgrade yt-dlp
+          yt-dlp --version
+          node --version
+          xelatex --version | head -n 1
+          ffmpeg -version | head -n 1
+
+      - name: Restore optional YouTube cookies
+        id: cookies
+        shell: bash
+        env:
+          YT_DLP_COOKIES_B64: ${{ secrets.YT_DLP_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          cookies_path=""
+          if [[ -n "$YT_DLP_COOKIES_B64" ]]; then
+            cookies_path="$RUNNER_TEMP/youtube-cookies.txt"
+            printf '%s' "$YT_DLP_COOKIES_B64" | base64 --decode > "$cookies_path"
+            chmod 600 "$cookies_path"
+            echo "YouTube cookies restored to a protected runner-local file."
+          else
+            echo "No YouTube cookies secret configured; attempting public extraction."
+          fi
+          echo "path=$cookies_path" >> "$GITHUB_OUTPUT"
+
+      - name: Acquire official sources and write the multi-agent task
+        id: prepare
+        shell: bash
+        env:
+          COOKIES_FILE: ${{ steps.cookies.outputs.path }}
+        run: |
+          set -euo pipefail
+          run_dir=".runs/$COURSE_ID/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}"
+          args=(
+            --manifest "courses/$COURSE_ID/manifest.json"
+            --lecture "${{ matrix.lecture.id }}"
+            --run-root ".runs/$COURSE_ID"
+            --max-height 1080
+          )
+          if [[ -n "$COOKIES_FILE" ]]; then
+            args+=(--cookies-file "$COOKIES_FILE")
+          fi
+          python3 scripts/prepare_efficientml_lecture.py "${args[@]}"
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+          echo "prompt_file=$run_dir/TASK.md" >> "$GITHUB_OUTPUT"
+          jq . "$run_dir/SOURCE_READY.json"
+
+      - name: Install youtube-render-pdf and pin multi-agent availability
+        id: codex_home
+        shell: bash
+        run: |
+          set -euo pipefail
+          codex_home="$GITHUB_WORKSPACE/.codex-home"
+          mkdir -p "$codex_home/skills"
+          cp -R skills/youtube-render-pdf "$codex_home/skills/youtube-render-pdf"
+          cat > "$codex_home/config.toml" <<'TOML'
+          [features]
+          multi_agent = true
+          TOML
+          echo "path=$codex_home" >> "$GITHUB_OUTPUT"
+
+      - name: Run the lecture coordinator and its subagents
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          codex-home: ${{ steps.codex_home.outputs.path }}
+          permission-profile: ":workspace"
+          working-directory: ${{ steps.prepare.outputs.run_dir }}
+          prompt-file: ${{ steps.prepare.outputs.prompt_file }}
+          output-file: ${{ steps.prepare.outputs.run_dir }}/logs/codex-final-message.txt
+          model: ${{ inputs.model }}
+          effort: high
+          codex-args: '["--ephemeral"]'
+
+      - name: Recompile and validate the final PDF
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_efficientml_output.py \
+            --run-dir "${{ steps.prepare.outputs.run_dir }}" \
+            --min-pages 5 \
+            --min-figures 4
+
+      - name: Write lecture result summary
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          run_dir=".runs/$COURSE_ID/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}"
+          {
+            echo "## Lecture ${{ matrix.lecture.id }} — ${{ matrix.lecture.title }}"
+            echo
+            if [[ -f "$run_dir/validation/validation-report.json" ]]; then
+              echo '```json'
+              cat "$run_dir/validation/validation-report.json"
+              echo '```'
+            else
+              echo "Validation report was not produced. Inspect the uploaded logs."
+            fi
+            echo
+            find "$run_dir/deliverables" -maxdepth 2 -type f -printf '%P (%s bytes)\n' 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload lecture PDF, TeX, assets, QA, and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: efficientml-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            .runs/${{ env.COURSE_ID }}/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}/deliverables/
+            .runs/${{ env.COURSE_ID }}/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}/validation/
+            .runs/${{ env.COURSE_ID }}/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}/logs/
+            .runs/${{ env.COURSE_ID }}/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}/lecture.json
+            .runs/${{ env.COURSE_ID }}/lecture-${{ matrix.lecture.id }}-${{ matrix.lecture.slug }}/SOURCE_READY.json
