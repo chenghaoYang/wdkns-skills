@@ -1,0 +1,5 @@
+{
+  "state": "blocked_missing_openai_api_key",
+  "observed_at": "2026-07-13T07:06:15Z",
+  "message": "Repository secret OPENAI_API_KEY is not configured; no render was dispatched."
+}
